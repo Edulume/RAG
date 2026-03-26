@@ -11,7 +11,7 @@ Central RAG (Retrieval-Augmented Generation) database that powers:
 
 ## Current Status
 
-**Class 10 indexed and working.** Add more classes from pendrive as needed.
+**Live at `http://13.232.174.33`** - Class 10 indexed, add more classes as needed.
 
 | Data | Status | Count |
 |------|--------|-------|
@@ -19,6 +19,62 @@ Central RAG (Retrieval-Augmented Generation) database that powers:
 | Questions (Exemplar) | ✅ Loaded | 2,159 |
 | NCERT Class 6-9 | ❌ Pending | Add from pendrive |
 | NCERT Class 11-12 | ❌ Pending | Add from pendrive |
+
+## Production
+
+**URL:** `http://13.232.174.33` (or `13.232.174.33` after DNS setup)
+
+| Resource | Details |
+|----------|---------|
+| Server | AWS EC2 t3.small (ap-south-1) |
+| IP | 13.232.174.33 |
+| Cost | ~$17/month |
+
+### Test Production
+```bash
+# Health
+curl http://13.232.174.33/health
+
+# Search
+curl -X POST http://13.232.174.33/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "photosynthesis", "limit": 3}'
+
+# Questions
+curl -X POST http://13.232.174.33/questions \
+  -H "Content-Type: application/json" \
+  -d '{"filters": {"class": 10, "subject": "Mathematics"}, "limit": 5}'
+
+# Stats
+curl http://13.232.174.33/stats
+```
+
+### Update Production
+```bash
+# SSH to server
+ssh -i ~/edulume-rag-key.pem ubuntu@13.232.174.33
+
+# Pull latest & restart
+cd /home/ubuntu/RAG && git pull
+sudo systemctl restart rag
+
+# Check logs
+sudo journalctl -u rag -f
+```
+
+### Re-deploy Data
+```bash
+# From local Mac - copy new index
+scp -i ~/edulume-rag-key.pem -r indexes/ncert-content/* \
+  ubuntu@13.232.174.33:/home/ubuntu/RAG/indexes/ncert-content/
+
+# Copy question bank
+scp -i ~/edulume-rag-key.pem data/question-bank.csv \
+  ubuntu@13.232.174.33:/home/ubuntu/RAG/data/
+
+# Restart service
+ssh -i ~/edulume-rag-key.pem ubuntu@13.232.174.33 "sudo systemctl restart rag"
+```
 
 ## Quick Start
 
@@ -243,9 +299,8 @@ pip install -r requirements.txt
 
 ## Next Steps
 
-1. **Add more classes** - Copy Class 6-9, 11-12 from pendrive
+1. **Add more classes** - Copy Class 6-9, 11-12 from pendrive, re-index, redeploy
 2. **Complete question extraction** - Run extraction on remaining 675 PDFs
-3. **Deploy** - Set up `rag.edulume.com` for production
 
 ---
 

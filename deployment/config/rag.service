@@ -1,0 +1,24 @@
+[Unit]
+Description=Edulume RAG API
+After=network.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/RAG
+Environment="PATH=/home/ubuntu/RAG/.venv/bin"
+Environment="PORT=6969"
+ExecStart=/home/ubuntu/RAG/.venv/bin/python api/server.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
