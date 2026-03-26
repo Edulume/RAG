@@ -11,15 +11,20 @@ Central RAG (Retrieval-Augmented Generation) database that powers:
 
 ## Current Status
 
-**Live at `http://13.232.174.33`** - CBSE Class 10 indexed, add more classes/boards as needed.
+**Live at `http://13.232.174.33`** - CBSE Classes 5-10, 12 indexed.
 
 | Data | Status | Count |
 |------|--------|-------|
-| CBSE Class 10 | ✅ Indexed | 4,680 chunks |
-| Questions (Exemplar) | ✅ Loaded | 2,159 |
-| CBSE Class 6-9 | ❌ Pending | Add from pendrive |
-| CBSE Class 11-12 | ❌ Pending | Add from pendrive |
-| ICSE | ❌ Pending | Add when available |
+| CBSE Class 5 | ✅ Indexed | 914 chunks |
+| CBSE Class 6 | ✅ Indexed | 625 chunks |
+| CBSE Class 7 | ✅ Indexed | 3,275 chunks |
+| CBSE Class 8 | ✅ Indexed | 1,269 chunks |
+| CBSE Class 9 | ✅ Indexed | 1,531 chunks |
+| CBSE Class 10 | ✅ Indexed | 3,034 chunks |
+| CBSE Class 11 | ❌ Pending | Add when available |
+| CBSE Class 12 | ✅ Indexed | 10,336 chunks |
+| Questions | ✅ Loaded | 2,159 |
+| **Total** | ✅ | **20,984 chunks** |
 
 ## Production
 
@@ -43,6 +48,11 @@ curl http://13.232.174.33/cbse/health
 curl -X POST http://13.232.174.33/cbse/search \
   -H "Content-Type: application/json" \
   -d '{"query": "photosynthesis", "limit": 3}'
+
+# Search with class filter
+curl -X POST http://13.232.174.33/cbse/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "polynomial", "filters": {"class": 10}, "limit": 3}'
 
 # Board-specific questions
 curl -X POST http://13.232.174.33/cbse/questions \
@@ -107,9 +117,10 @@ curl http://localhost:6969/boards
 curl http://localhost:6969/cbse/health
 curl http://localhost:6969/cbse/stats
 
+# Search with filters
 curl -X POST http://localhost:6969/cbse/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "photosynthesis", "limit": 3}'
+  -d '{"query": "quadratic equations", "filters": {"class": 10}, "limit": 3}'
 
 curl -X POST http://localhost:6969/cbse/questions \
   -H "Content-Type: application/json" \
@@ -189,16 +200,20 @@ RAG/
 │   └── extract-questions/     # Question extraction (Claude Vision)
 ├── data/                      # Gitignored
 │   ├── CBSE/
-│   │   └── Class-10/          # 154 PDFs (390MB)
+│   │   ├── Class 5th/         # 47 PDFs
+│   │   ├── Class 6th/         # 14 PDFs
+│   │   ├── Class 7th/         # 95 PDFs
+│   │   ├── Class 8th/         # 37 PDFs
+│   │   ├── Class 9th/         # 49 PDFs
+│   │   ├── Class 10th/        # 94 PDFs (includes Math)
+│   │   └── Class 12th/        # 250 PDFs
 │   ├── ICSE/                  # Add when available
-│   │   └── ...
 │   └── question-bank.csv      # 2,159 questions (with board column)
 ├── indexes/                   # Gitignored
 │   ├── cbse/
-│   │   ├── index.faiss        # CBSE vector index
-│   │   └── documents.pkl      # CBSE document metadata
+│   │   ├── index.faiss        # CBSE vector index (32MB)
+│   │   └── documents.pkl      # CBSE document metadata (24MB)
 │   └── icse/                  # Add when indexed
-│       └── ...
 ├── logs/
 │   └── extraction-log.csv     # Question extraction progress
 └── .venv/                     # Python virtual environment
@@ -226,33 +241,35 @@ python pipelines/index-ncert/index.py --board cbse --search "photosynthesis"
 python pipelines/index-ncert/index.py --board cbse --stats
 ```
 
-### Add More Classes
+### Add Class 11 (when available)
 ```bash
-# Copy from pendrive to board folder
-cp -r /Volumes/PENDRIVE/Class-9/* data/CBSE/Class-9/
-cp -r /Volumes/PENDRIVE/Class-11/* data/CBSE/Class-11/
+# 1. Copy PDFs to board folder
+cp -r /path/to/Class-11/* data/CBSE/"Class 11th"/
 
-# Re-index board
+# 2. Re-index (appends to existing, no --clear)
 python pipelines/index-ncert/index.py --board cbse
 
-# Restart server
-pkill -f "python api/server.py"
-nohup python api/server.py > /tmp/rag-server.log 2>&1 &
+# 3. Deploy to AWS
+scp -i ~/edulume-rag-key.pem -r indexes/cbse/* \
+  ubuntu@13.232.174.33:/home/ubuntu/RAG/indexes/cbse/
+ssh -i ~/edulume-rag-key.pem ubuntu@13.232.174.33 "sudo systemctl restart rag"
 ```
 
-### Add New Board
+### Add New Board (e.g., ICSE)
 ```bash
 # Create board data directory
 mkdir -p data/ICSE/Class-10
 
 # Copy books
-cp -r /Volumes/PENDRIVE/ICSE/Class-10/* data/ICSE/Class-10/
+cp -r /path/to/ICSE/Class-10/* data/ICSE/Class-10/
 
 # Index the board
 python pipelines/index-ncert/index.py --board icse
 
-# Add board column to questions (if needed)
-# Questions already have 'board' column - just add questions with board=icse
+# Deploy to AWS
+scp -i ~/edulume-rag-key.pem -r indexes/icse/* \
+  ubuntu@13.232.174.33:/home/ubuntu/RAG/indexes/icse/
+ssh -i ~/edulume-rag-key.pem ubuntu@13.232.174.33 "sudo systemctl restart rag"
 ```
 
 ### Extract Questions (from PDFs)
@@ -314,14 +331,14 @@ pip install -r requirements.txt
 ## Data Sources
 
 ### Books (for /{board}/search)
-- CBSE Class 6-12 textbooks
-- Currently: CBSE Class 10 indexed (154 PDFs → 4,680 chunks)
-- Subjects: Math, Science, SST, English, Hindi, Sanskrit, PE
+- CBSE Class 5-12 textbooks (excluding 11)
+- Currently indexed: 586 PDFs → 20,984 chunks
+- Subjects: Math, Science, SST, English, Hindi, Sanskrit, PE, Arts, etc.
 
 ### Question Bank (for /{board}/questions)
 | Source | PDFs | Status |
 |--------|------|--------|
-| NCERT Exemplar | 166 | Extracting |
+| NCERT Exemplar | 166 | ✅ Extracted (2,159 questions) |
 | CBSE Class 10 PYQs | 146 | Pending |
 | CBSE Class 12 PYQs | 420 | Pending |
 | JEE Main PYQs | 66 | Pending |
@@ -342,9 +359,9 @@ pip install -r requirements.txt
 
 ## Next Steps
 
-1. **Add more CBSE classes** - Copy Class 6-9, 11-12 from pendrive, re-index with `--board cbse`
+1. **Add Class 11** - When available, copy to `data/CBSE/"Class 11th"/` and re-index
 2. **Add ICSE board** - When available, create `data/ICSE/` and index with `--board icse`
-3. **Complete question extraction** - Run extraction on remaining 675 PDFs
+3. **Complete question extraction** - Run extraction on remaining PYQ PDFs
 
 ---
 
