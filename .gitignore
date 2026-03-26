@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.Python
+env/
+venv/
+
+# Data (too large for git)
+data/
+*.pdf
+*.zip
+
+# Indexes (can be regenerated)
+indexes/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Lock files (keep for reproducibility)
+# uv.lock
+# bun.lockb

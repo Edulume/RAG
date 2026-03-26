@@ -1,0 +1,24 @@
+{
+  "name": "question-bank-automation",
+  "version": "1.0.0",
+  "description": "AI-powered question extraction from PDFs using Claude Sonnet 4.5 Vision API",
+  "type": "module",
+  "scripts": {
+    "extract": "bun run src/main.ts",
+    "test": "bun run src/test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0",
+    "pdf-parse": "^1.1.1",
+    "pdf-poppler": "^0.2.1",
+    "sharp": "^0.33.0",
+    "csv-parse": "^5.5.3",
+    "csv-stringify": "^6.4.5",
+    "zod": "^3.22.4",
+    "glob": "^10.3.10"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "bun-types": "latest"
+  }
+}
