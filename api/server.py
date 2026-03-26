@@ -53,8 +53,9 @@ logger = logging.getLogger(__name__)
 
 CONFIG = {
     "embedding_model": "all-MiniLM-L6-v2",
-    "ncert_index_path": PROJECT_ROOT / "indexes" / "ncert-content",
+    "indexes_root": PROJECT_ROOT / "indexes",
     "questions_csv_path": PROJECT_ROOT / "data" / "question-bank.csv",
+    "default_board": "cbse",
 }
 
 # ============================================
@@ -113,59 +114,134 @@ class StatsResponse(BaseModel):
     by_subject: Dict[str, int]
 
 # ============================================
-# RAG Service
+# RAG Service (per-board)
 # ============================================
 
 class RAGService:
-    """Service for RAG operations."""
+    """Service for RAG operations on a specific board."""
 
-    _instance = None
+    def __init__(self, board: str, index_path: Path, model: SentenceTransformer):
+        self.board = board.lower()
+        self.index_path = index_path
+        self.model = model
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
+        self.index = None
+        self.documents = []
+        self._load_index()
+
+    def _load_index(self):
+        """Load FAISS index and documents for this board."""
+        index_file = self.index_path / "index.faiss"
+        docs_file = self.index_path / "documents.pkl"
+
+        if not index_file.exists() or not docs_file.exists():
+            logger.warning(f"Index not found for board '{self.board}' at {self.index_path}")
+            return
+
+        logger.info(f"Loading index for {self.board.upper()} from {self.index_path}")
+        self.index = faiss.read_index(str(index_file))
+
+        with open(docs_file, "rb") as f:
+            self.documents = pickle.load(f)
+
+        logger.info(f"Loaded {len(self.documents)} documents for {self.board.upper()}")
+
+    def is_loaded(self) -> bool:
+        """Check if index is loaded."""
+        return self.index is not None and len(self.documents) > 0
+
+    def search(self, query: str, filters: Dict = None, limit: int = 5) -> List[Dict]:
+        """Search content for this board."""
+        if not self.is_loaded():
+            return []
+
+        # Generate query embedding
+        query_embedding = self.model.encode([query])
+        query_array = np.array(query_embedding, dtype=np.float32)
+
+        # Search more than needed for filtering
+        search_k = min(limit * 3, len(self.documents))
+        distances, indices = self.index.search(query_array, search_k)
+
+        results = []
+        for idx, distance in zip(indices[0], distances[0]):
+            if idx < len(self.documents):
+                doc = self.documents[idx]
+
+                # Apply filters
+                if filters:
+                    if "class" in filters and filters["class"]:
+                        doc_class = doc.metadata.get("class")
+                        filter_class = filters["class"]
+                        # Compare as integers to handle type mismatches
+                        if doc_class is not None and int(doc_class) != int(filter_class):
+                            continue
+                    if "subject" in filters and filters["subject"]:
+                        if filters["subject"].lower() not in doc.metadata.get("subject", "").lower():
+                            continue
+
+                results.append({
+                    "content": doc.content,
+                    "metadata": doc.metadata,
+                    "score": float(distance),
+                })
+
+                if len(results) >= limit:
+                    break
+
+        return results
+
+    def get_stats(self) -> Dict:
+        """Get index statistics for this board."""
+        stats = {
+            "board": self.board.upper(),
+            "documents": len(self.documents),
+            "indexed": self.is_loaded(),
+            "by_class": {},
+            "by_subject": {},
+        }
+
+        for doc in self.documents:
+            cls = str(doc.metadata.get("class", "unknown"))
+            subj = doc.metadata.get("subject", "unknown")
+            stats["by_class"][cls] = stats["by_class"].get(cls, 0) + 1
+            stats["by_subject"][subj] = stats["by_subject"].get(subj, 0) + 1
+
+        return stats
+
+
+# ============================================
+# Board Registry
+# ============================================
+
+class BoardRegistry:
+    """Registry that manages multiple board services."""
 
     def __init__(self):
+        self.boards: Dict[str, RAGService] = {}
+        self.model: Optional[SentenceTransformer] = None
+        self.questions: List[Dict] = []
+        self._initialized = False
+
+    def initialize(self):
+        """Initialize the registry (load embedding model and questions)."""
         if self._initialized:
             return
 
-        logger.info("Initializing RAG Service...")
+        logger.info("Initializing Board Registry...")
 
-        # Load embedding model
+        # Load embedding model (shared across all boards)
         logger.info(f"Loading embedding model: {CONFIG['embedding_model']}")
         self.model = SentenceTransformer(CONFIG["embedding_model"])
 
-        # Load NCERT index
-        self.ncert_index = None
-        self.ncert_documents = []
-        self._load_ncert_index()
-
-        # Load questions CSV
-        self.questions = []
+        # Load questions
         self._load_questions()
 
+        # Pre-load default board
+        self.get_board(CONFIG["default_board"])
+
         self._initialized = True
-        logger.info("RAG Service initialized")
-
-    def _load_ncert_index(self):
-        """Load FAISS index and documents."""
-        index_path = CONFIG["ncert_index_path"]
-        index_file = index_path / "index.faiss"
-        docs_file = index_path / "documents.pkl"
-
-        if not index_file.exists() or not docs_file.exists():
-            logger.warning("NCERT index not found. Run indexing first.")
-            return
-
-        logger.info(f"Loading NCERT index from {index_path}")
-        self.ncert_index = faiss.read_index(str(index_file))
-
-        with open(docs_file, "rb") as f:
-            self.ncert_documents = pickle.load(f)
-
-        logger.info(f"Loaded {len(self.ncert_documents)} NCERT documents")
+        logger.info("Board Registry initialized")
 
     def _load_questions(self):
         """Load questions from CSV."""
@@ -183,49 +259,37 @@ class RAGService:
 
         logger.info(f"Loaded {len(self.questions)} questions")
 
-    def search_ncert(self, query: str, filters: Dict = None, limit: int = 5) -> List[Dict]:
-        """Search NCERT content."""
-        if self.ncert_index is None or len(self.ncert_documents) == 0:
+    def get_board(self, board: str) -> RAGService:
+        """Get or create a RAGService for the specified board."""
+        board = board.lower()
+
+        if board not in self.boards:
+            index_path = CONFIG["indexes_root"] / board
+            if not index_path.exists():
+                raise HTTPException(status_code=404, detail=f"Board '{board}' not found")
+
+            self.boards[board] = RAGService(board, index_path, self.model)
+
+        return self.boards[board]
+
+    def list_boards(self) -> List[str]:
+        """List all available boards."""
+        indexes_root = CONFIG["indexes_root"]
+        if not indexes_root.exists():
             return []
 
-        # Generate query embedding
-        query_embedding = self.model.encode([query])
-        query_array = np.array(query_embedding, dtype=np.float32)
+        return [p.name for p in indexes_root.iterdir()
+                if p.is_dir() and (p / "index.faiss").exists()]
 
-        # Search more than needed for filtering
-        search_k = min(limit * 3, len(self.ncert_documents))
-        distances, indices = self.ncert_index.search(query_array, search_k)
-
-        results = []
-        for idx, distance in zip(indices[0], distances[0]):
-            if idx < len(self.ncert_documents):
-                doc = self.ncert_documents[idx]
-
-                # Apply filters
-                if filters:
-                    if "class" in filters and filters["class"]:
-                        if doc.metadata.get("class") != filters["class"]:
-                            continue
-                    if "subject" in filters and filters["subject"]:
-                        if filters["subject"].lower() not in doc.metadata.get("subject", "").lower():
-                            continue
-
-                results.append({
-                    "content": doc.content,
-                    "metadata": doc.metadata,
-                    "score": float(distance),
-                })
-
-                if len(results) >= limit:
-                    break
-
-        return results
-
-    def query_questions(self, filters: QuestionFilters, limit: int = 10, offset: int = 0) -> tuple:
-        """Query questions with filters."""
+    def query_questions(self, board: str, filters: QuestionFilters, limit: int = 10, offset: int = 0) -> tuple:
+        """Query questions with filters, optionally filtered by board."""
         filtered = self.questions
 
-        # Apply filters
+        # Filter by board if specified
+        board = board.lower()
+        filtered = [q for q in filtered if q.get("board", "cbse").lower() == board]
+
+        # Apply other filters
         if filters.class_level:
             filtered = [q for q in filtered if str(q.get("class", "")) == str(filters.class_level)]
 
@@ -262,6 +326,7 @@ class RAGService:
                 "correct_answer": q.get("correct_answer", ""),
                 "solution": q.get("solution", ""),
                 "metadata": {
+                    "board": q.get("board", "cbse"),
                     "source_book": q.get("source_book", ""),
                     "class": q.get("class", ""),
                     "subject": q.get("subject", ""),
@@ -279,22 +344,13 @@ class RAGService:
 
         return results, total
 
-    def get_stats(self) -> Dict:
-        """Get index statistics."""
+    def get_all_stats(self) -> Dict:
+        """Get combined statistics."""
         stats = {
-            "ncert_documents": len(self.ncert_documents),
-            "questions_count": len(self.questions),
-            "by_class": {},
-            "by_subject": {},
+            "boards": self.list_boards(),
+            "total_questions": len(self.questions),
+            "loaded_boards": list(self.boards.keys()),
         }
-
-        # NCERT stats
-        for doc in self.ncert_documents:
-            cls = str(doc.metadata.get("class", "unknown"))
-            subj = doc.metadata.get("subject", "unknown")
-            stats["by_class"][cls] = stats["by_class"].get(cls, 0) + 1
-            stats["by_subject"][subj] = stats["by_subject"].get(subj, 0) + 1
-
         return stats
 
 # ============================================
@@ -303,8 +359,8 @@ class RAGService:
 
 app = FastAPI(
     title="Edulume RAG API",
-    description="NCERT Content Search & Question Bank API",
-    version="1.0.0",
+    description="Multi-Board NCERT Content Search & Question Bank API",
+    version="2.0.0",
 )
 
 # CORS
@@ -316,53 +372,64 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global service instance
-rag_service: Optional[RAGService] = None
+# Global registry instance
+registry: Optional[BoardRegistry] = None
 
 @app.on_event("startup")
 async def startup():
-    global rag_service
-    rag_service = RAGService()
+    global registry
+    registry = BoardRegistry()
+    registry.initialize()
 
 # ============================================
-# Routes
+# Routes - Board Specific
 # ============================================
 
-@app.get("/")
-async def root():
-    """API info."""
-    return {
-        "name": "Edulume RAG API",
-        "version": "1.0.0",
-        "endpoints": {
-            "search": "POST /search",
-            "questions": "POST /questions",
-            "stats": "GET /stats",
-            "health": "GET /health",
-        }
-    }
-
-@app.get("/health")
-async def health():
-    """Health check."""
-    return {
-        "status": "healthy",
-        "ncert_indexed": rag_service.ncert_index is not None if rag_service else False,
-        "questions_loaded": len(rag_service.questions) > 0 if rag_service else False,
-    }
-
-@app.get("/stats", response_model=StatsResponse)
-async def get_stats():
-    """Get index statistics."""
-    if not rag_service:
+@app.get("/boards")
+async def list_boards():
+    """List all available boards."""
+    if not registry:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    return rag_service.get_stats()
+    return {
+        "boards": registry.list_boards(),
+        "default": CONFIG["default_board"],
+    }
 
-@app.post("/search", response_model=SearchResponse)
-async def search_ncert(request: SearchRequest):
+@app.get("/{board}/health")
+async def board_health(board: str):
+    """Health check for specific board."""
+    if not registry:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    try:
+        service = registry.get_board(board)
+        return {
+            "status": "healthy",
+            "board": board.upper(),
+            "indexed": service.is_loaded(),
+            "documents": len(service.documents),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/{board}/stats")
+async def board_stats(board: str):
+    """Get statistics for specific board."""
+    if not registry:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    service = registry.get_board(board)
+    stats = service.get_stats()
+    stats["questions_count"] = len([q for q in registry.questions if q.get("board", "cbse").lower() == board.lower()])
+    return stats
+
+@app.post("/{board}/search", response_model=SearchResponse)
+async def board_search(board: str, request: SearchRequest):
     """
-    Search NCERT content.
+    Search content for specific board.
 
     Example:
     ```json
@@ -373,10 +440,11 @@ async def search_ncert(request: SearchRequest):
     }
     ```
     """
-    if not rag_service:
+    if not registry:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    results = rag_service.search_ncert(
+    service = registry.get_board(board)
+    results = service.search(
         query=request.query,
         filters=request.filters,
         limit=request.limit
@@ -388,10 +456,10 @@ async def search_ncert(request: SearchRequest):
         total_found=len(results)
     )
 
-@app.post("/questions", response_model=QuestionsResponse)
-async def get_questions(request: QuestionsRequest):
+@app.post("/{board}/questions", response_model=QuestionsResponse)
+async def board_questions(board: str, request: QuestionsRequest):
     """
-    Query questions from question bank.
+    Query questions for specific board.
 
     Example:
     ```json
@@ -407,10 +475,117 @@ async def get_questions(request: QuestionsRequest):
     }
     ```
     """
-    if not rag_service:
+    if not registry:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    questions, total = rag_service.query_questions(
+    questions, total = registry.query_questions(
+        board=board,
+        filters=request.filters,
+        limit=request.limit,
+        offset=request.offset
+    )
+
+    return QuestionsResponse(
+        questions=[Question(**q) for q in questions],
+        total_found=total,
+        limit=request.limit,
+        offset=request.offset
+    )
+
+# ============================================
+# Routes - Legacy (backward compatibility)
+# ============================================
+
+@app.get("/")
+async def root():
+    """API info."""
+    return {
+        "name": "Edulume RAG API",
+        "version": "2.0.0",
+        "boards": registry.list_boards() if registry else [],
+        "default_board": CONFIG["default_board"],
+        "endpoints": {
+            "boards": "GET /boards",
+            "board_health": "GET /{board}/health",
+            "board_stats": "GET /{board}/stats",
+            "board_search": "POST /{board}/search",
+            "board_questions": "POST /{board}/questions",
+            "legacy_search": "POST /search (defaults to cbse)",
+            "legacy_questions": "POST /questions (defaults to cbse)",
+            "legacy_health": "GET /health",
+            "legacy_stats": "GET /stats",
+        }
+    }
+
+@app.get("/health")
+async def health():
+    """Health check (legacy - uses default board)."""
+    if not registry:
+        return {"status": "unhealthy", "error": "Service not initialized"}
+
+    default_board = CONFIG["default_board"]
+    try:
+        service = registry.get_board(default_board)
+        return {
+            "status": "healthy",
+            "board": default_board.upper(),
+            "indexed": service.is_loaded(),
+            "questions_loaded": len(registry.questions) > 0,
+        }
+    except Exception:
+        return {
+            "status": "healthy",
+            "board": default_board.upper(),
+            "indexed": False,
+            "questions_loaded": len(registry.questions) > 0,
+        }
+
+@app.get("/stats")
+async def get_stats():
+    """Get statistics (legacy - uses default board)."""
+    if not registry:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    default_board = CONFIG["default_board"]
+    service = registry.get_board(default_board)
+    stats = service.get_stats()
+
+    return {
+        "ncert_documents": stats["documents"],
+        "questions_count": len(registry.questions),
+        "by_class": stats["by_class"],
+        "by_subject": stats["by_subject"],
+    }
+
+@app.post("/search", response_model=SearchResponse)
+async def search_ncert(request: SearchRequest):
+    """Search NCERT content (legacy - uses default board)."""
+    if not registry:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    default_board = CONFIG["default_board"]
+    service = registry.get_board(default_board)
+    results = service.search(
+        query=request.query,
+        filters=request.filters,
+        limit=request.limit
+    )
+
+    return SearchResponse(
+        query=request.query,
+        results=[SearchResult(**r) for r in results],
+        total_found=len(results)
+    )
+
+@app.post("/questions", response_model=QuestionsResponse)
+async def get_questions(request: QuestionsRequest):
+    """Query questions (legacy - uses default board)."""
+    if not registry:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    default_board = CONFIG["default_board"]
+    questions, total = registry.query_questions(
+        board=default_board,
         filters=request.filters,
         limit=request.limit,
         offset=request.offset
@@ -424,32 +599,38 @@ async def get_questions(request: QuestionsRequest):
     )
 
 @app.get("/questions/subjects")
-async def get_subjects():
+async def get_subjects(board: Optional[str] = None):
     """Get available subjects in question bank."""
-    if not rag_service:
+    if not registry:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
+    board = board or CONFIG["default_board"]
     subjects = set()
-    for q in rag_service.questions:
+    for q in registry.questions:
+        if q.get("board", "cbse").lower() != board.lower():
+            continue
         if q.get("subject"):
             subjects.add(q["subject"])
 
-    return {"subjects": sorted(list(subjects))}
+    return {"board": board.upper(), "subjects": sorted(list(subjects))}
 
 @app.get("/questions/topics")
-async def get_topics(subject: Optional[str] = None):
-    """Get available topics, optionally filtered by subject."""
-    if not rag_service:
+async def get_topics(subject: Optional[str] = None, board: Optional[str] = None):
+    """Get available topics, optionally filtered by subject and board."""
+    if not registry:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
+    board = board or CONFIG["default_board"]
     topics = set()
-    for q in rag_service.questions:
+    for q in registry.questions:
+        if q.get("board", "cbse").lower() != board.lower():
+            continue
         if subject and subject.lower() not in q.get("subject", "").lower():
             continue
         if q.get("topic"):
             topics.add(q["topic"])
 
-    return {"topics": sorted(list(topics)), "count": len(topics)}
+    return {"board": board.upper(), "topics": sorted(list(topics)), "count": len(topics)}
 
 # ============================================
 # Main
@@ -462,13 +643,17 @@ if __name__ == "__main__":
 
     print(f"""
 ╔═══════════════════════════════════════════════════════════╗
-║           Edulume RAG API Server                          ║
+║           Edulume RAG API Server v2.0                     ║
 ╠═══════════════════════════════════════════════════════════╣
-║  Endpoints:                                               ║
-║    POST /search      - Search NCERT content               ║
-║    POST /questions   - Query question bank                ║
-║    GET  /stats       - Index statistics                   ║
-║    GET  /health      - Health check                       ║
+║  Board-Specific Endpoints:                                ║
+║    GET  /boards               - List available boards     ║
+║    GET  /{{board}}/health       - Board health check        ║
+║    GET  /{{board}}/stats        - Board statistics          ║
+║    POST /{{board}}/search       - Search board content      ║
+║    POST /{{board}}/questions    - Query board questions     ║
+╠═══════════════════════════════════════════════════════════╣
+║  Legacy Endpoints (defaults to CBSE):                     ║
+║    POST /search, /questions   GET /health, /stats         ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Server: http://localhost:{port}                            ║
 ║  Docs:   http://localhost:{port}/docs                       ║

@@ -1,6 +1,6 @@
 # Edulume RAG
 
-Production RAG system for NCERT content search and question bank queries.
+Production RAG system for multi-board (CBSE, ICSE, etc.) content search and question bank queries.
 
 ## What This Is
 
@@ -11,18 +11,19 @@ Central RAG (Retrieval-Augmented Generation) database that powers:
 
 ## Current Status
 
-**Live at `http://13.232.174.33`** - Class 10 indexed, add more classes as needed.
+**Live at `http://13.232.174.33`** - CBSE Class 10 indexed, add more classes/boards as needed.
 
 | Data | Status | Count |
 |------|--------|-------|
-| NCERT Class 10 | ✅ Indexed | 4,680 chunks |
+| CBSE Class 10 | ✅ Indexed | 4,680 chunks |
 | Questions (Exemplar) | ✅ Loaded | 2,159 |
-| NCERT Class 6-9 | ❌ Pending | Add from pendrive |
-| NCERT Class 11-12 | ❌ Pending | Add from pendrive |
+| CBSE Class 6-9 | ❌ Pending | Add from pendrive |
+| CBSE Class 11-12 | ❌ Pending | Add from pendrive |
+| ICSE | ❌ Pending | Add when available |
 
 ## Production
 
-**URL:** `http://13.232.174.33` (or `13.232.174.33` after DNS setup)
+**URL:** `http://13.232.174.33`
 
 | Resource | Details |
 |----------|---------|
@@ -32,20 +33,27 @@ Central RAG (Retrieval-Augmented Generation) database that powers:
 
 ### Test Production
 ```bash
-# Health
-curl http://13.232.174.33/health
+# List available boards
+curl http://13.232.174.33/boards
 
-# Search
-curl -X POST http://13.232.174.33/search \
+# Board-specific health
+curl http://13.232.174.33/cbse/health
+
+# Board-specific search
+curl -X POST http://13.232.174.33/cbse/search \
   -H "Content-Type: application/json" \
   -d '{"query": "photosynthesis", "limit": 3}'
 
-# Questions
-curl -X POST http://13.232.174.33/questions \
+# Board-specific questions
+curl -X POST http://13.232.174.33/cbse/questions \
   -H "Content-Type: application/json" \
   -d '{"filters": {"class": 10, "subject": "Mathematics"}, "limit": 5}'
 
-# Stats
+# Board-specific stats
+curl http://13.232.174.33/cbse/stats
+
+# Legacy endpoints (default to CBSE)
+curl http://13.232.174.33/health
 curl http://13.232.174.33/stats
 ```
 
@@ -64,9 +72,9 @@ sudo journalctl -u rag -f
 
 ### Re-deploy Data
 ```bash
-# From local Mac - copy new index
-scp -i ~/edulume-rag-key.pem -r indexes/ncert-content/* \
-  ubuntu@13.232.174.33:/home/ubuntu/RAG/indexes/ncert-content/
+# From local Mac - copy board index
+scp -i ~/edulume-rag-key.pem -r indexes/cbse/* \
+  ubuntu@13.232.174.33:/home/ubuntu/RAG/indexes/cbse/
 
 # Copy question bank
 scp -i ~/edulume-rag-key.pem data/question-bank.csv \
@@ -92,27 +100,40 @@ Server runs at: `http://localhost:6969`
 
 ### Test Endpoints
 ```bash
-# Health check
-curl http://localhost:6969/health
+# List available boards
+curl http://localhost:6969/boards
 
-# Search NCERT content
-curl -X POST http://localhost:6969/search \
+# Board-specific endpoints
+curl http://localhost:6969/cbse/health
+curl http://localhost:6969/cbse/stats
+
+curl -X POST http://localhost:6969/cbse/search \
   -H "Content-Type: application/json" \
   -d '{"query": "photosynthesis", "limit": 3}'
 
-# Query questions
-curl -X POST http://localhost:6969/questions \
+curl -X POST http://localhost:6969/cbse/questions \
   -H "Content-Type: application/json" \
   -d '{"filters": {"class": 10, "subject": "Mathematics"}, "limit": 5}'
 
-# Get stats
+# Legacy endpoints (backward compatible, default to CBSE)
+curl http://localhost:6969/health
 curl http://localhost:6969/stats
 ```
 
 ## API Endpoints
 
-### POST /search
-Search NCERT textbook content.
+### Board-Specific Endpoints (v2.0)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /boards` | List available boards |
+| `GET /{board}/health` | Board health check |
+| `GET /{board}/stats` | Board statistics |
+| `POST /{board}/search` | Search board content |
+| `POST /{board}/questions` | Query board questions |
+
+### POST /{board}/search
+Search textbook content for specific board.
 
 ```json
 {
@@ -125,10 +146,10 @@ Search NCERT textbook content.
 }
 ```
 
-**Response:** Returns matching content chunks with metadata (class, subject, chapter).
+**Response:** Returns matching content chunks with metadata (board, class, subject, chapter).
 
-### POST /questions
-Query question bank with filters.
+### POST /{board}/questions
+Query question bank for specific board.
 
 ```json
 {
@@ -145,13 +166,16 @@ Query question bank with filters.
 }
 ```
 
-**Response:** Returns questions with answers, solutions, and full metadata.
+**Response:** Returns questions with answers, solutions, and full metadata including board.
 
-### GET /stats
-Returns index statistics (document counts, subjects, etc.).
+### Legacy Endpoints (backward compatible)
 
-### GET /health
-Health check endpoint.
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check (defaults to CBSE) |
+| `GET /stats` | Statistics (defaults to CBSE) |
+| `POST /search` | Search (defaults to CBSE) |
+| `POST /questions` | Questions (defaults to CBSE) |
 
 ## Directory Structure
 
@@ -161,16 +185,20 @@ RAG/
 │   └── server.py              # FastAPI server (port 6969)
 ├── pipelines/
 │   ├── index-ncert/
-│   │   └── index.py           # NCERT book indexing
+│   │   └── index.py           # Book indexing with --board flag
 │   └── extract-questions/     # Question extraction (Claude Vision)
 ├── data/                      # Gitignored
-│   ├── ncert-books/
+│   ├── CBSE/
 │   │   └── Class-10/          # 154 PDFs (390MB)
-│   └── question-bank.csv      # 2,159 questions
+│   ├── ICSE/                  # Add when available
+│   │   └── ...
+│   └── question-bank.csv      # 2,159 questions (with board column)
 ├── indexes/                   # Gitignored
-│   └── ncert-content/
-│       ├── index.faiss        # Vector index
-│       └── documents.pkl      # Document metadata
+│   ├── cbse/
+│   │   ├── index.faiss        # CBSE vector index
+│   │   └── documents.pkl      # CBSE document metadata
+│   └── icse/                  # Add when indexed
+│       └── ...
 ├── logs/
 │   └── extraction-log.csv     # Question extraction progress
 └── .venv/                     # Python virtual environment
@@ -178,38 +206,53 @@ RAG/
 
 ## Commands
 
-### Index NCERT Books
+### Index Books by Board
 ```bash
 source .venv/bin/activate
 
-# Index specific class
-python pipelines/index-ncert/index.py --source data/ncert-books/Class-10
+# Index CBSE (default)
+python pipelines/index-ncert/index.py --board cbse
 
-# Index all classes
-python pipelines/index-ncert/index.py
+# Index specific board with custom source
+python pipelines/index-ncert/index.py --board icse --source data/ICSE
 
-# Clear and rebuild
-python pipelines/index-ncert/index.py --clear
+# Clear and rebuild board index
+python pipelines/index-ncert/index.py --board cbse --clear
 
 # Search test
-python pipelines/index-ncert/index.py --search "photosynthesis"
+python pipelines/index-ncert/index.py --board cbse --search "photosynthesis"
 
-# Show stats
-python pipelines/index-ncert/index.py --stats
+# Show board stats
+python pipelines/index-ncert/index.py --board cbse --stats
 ```
 
 ### Add More Classes
 ```bash
-# Copy from pendrive
-cp -r /Volumes/PENDRIVE/Class-9/* data/ncert-books/Class-9/
-cp -r /Volumes/PENDRIVE/Class-11/* data/ncert-books/Class-11/
+# Copy from pendrive to board folder
+cp -r /Volumes/PENDRIVE/Class-9/* data/CBSE/Class-9/
+cp -r /Volumes/PENDRIVE/Class-11/* data/CBSE/Class-11/
 
-# Re-index
-python pipelines/index-ncert/index.py
+# Re-index board
+python pipelines/index-ncert/index.py --board cbse
 
 # Restart server
 pkill -f "python api/server.py"
 nohup python api/server.py > /tmp/rag-server.log 2>&1 &
+```
+
+### Add New Board
+```bash
+# Create board data directory
+mkdir -p data/ICSE/Class-10
+
+# Copy books
+cp -r /Volumes/PENDRIVE/ICSE/Class-10/* data/ICSE/Class-10/
+
+# Index the board
+python pipelines/index-ncert/index.py --board icse
+
+# Add board column to questions (if needed)
+# Questions already have 'board' column - just add questions with board=icse
 ```
 
 ### Extract Questions (from PDFs)
@@ -263,19 +306,19 @@ pip install -r requirements.txt
 
 | File | Purpose |
 |------|---------|
-| `api/server.py` | FastAPI server with /search and /questions |
-| `pipelines/index-ncert/index.py` | NCERT book indexing to FAISS |
+| `api/server.py` | FastAPI server with multi-board endpoints |
+| `pipelines/index-ncert/index.py` | Book indexing with --board flag |
 | `pipelines/extract-questions/` | Claude Vision extraction pipeline |
-| `data/question-bank.csv` | Extracted questions with metadata |
+| `data/question-bank.csv` | Extracted questions with board column |
 
 ## Data Sources
 
-### NCERT Books (for /search)
-- Class 6-12 textbooks
-- Currently: Class 10 indexed (154 PDFs → 4,680 chunks)
+### Books (for /{board}/search)
+- CBSE Class 6-12 textbooks
+- Currently: CBSE Class 10 indexed (154 PDFs → 4,680 chunks)
 - Subjects: Math, Science, SST, English, Hindi, Sanskrit, PE
 
-### Question Bank (for /questions)
+### Question Bank (for /{board}/questions)
 | Source | PDFs | Status |
 |--------|------|--------|
 | NCERT Exemplar | 166 | Extracting |
@@ -299,8 +342,9 @@ pip install -r requirements.txt
 
 ## Next Steps
 
-1. **Add more classes** - Copy Class 6-9, 11-12 from pendrive, re-index, redeploy
-2. **Complete question extraction** - Run extraction on remaining 675 PDFs
+1. **Add more CBSE classes** - Copy Class 6-9, 11-12 from pendrive, re-index with `--board cbse`
+2. **Add ICSE board** - When available, create `data/ICSE/` and index with `--board icse`
+3. **Complete question extraction** - Run extraction on remaining 675 PDFs
 
 ---
 

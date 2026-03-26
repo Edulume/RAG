@@ -39,8 +39,9 @@ CONFIG = {
     "embedding_model": "all-MiniLM-L6-v2",  # Fast & good quality
     "chunk_size": 1000,  # Characters per chunk
     "chunk_overlap": 200,  # Overlap between chunks
-    "index_path": PROJECT_ROOT / "indexes" / "ncert-content",
-    "data_path": PROJECT_ROOT / "data" / "ncert-books",
+    "indexes_root": PROJECT_ROOT / "indexes",
+    "data_root": PROJECT_ROOT / "data",
+    "default_board": "cbse",
 }
 
 
@@ -189,10 +190,13 @@ class EmbeddingService:
 class NCERTIndexer:
     """Main indexer class that ties everything together."""
 
-    def __init__(self, config: Dict = None):
+    def __init__(self, board: str = None, config: Dict = None):
         self.config = config or CONFIG
-        self.index_path = Path(self.config["index_path"])
-        self.data_path = Path(self.config["data_path"])
+        self.board = (board or self.config["default_board"]).lower()
+
+        # Board-specific paths
+        self.index_path = Path(self.config["indexes_root"]) / self.board
+        self.data_path = Path(self.config["data_root"]) / self.board.upper()
 
         # Initialize components
         self.pdf_loader = PDFLoader()
@@ -259,6 +263,7 @@ class NCERTIndexer:
             for j, chunk in enumerate(chunks):
                 doc_metadata = {
                     **metadata,
+                    "board": self.board,
                     "chunk_index": j,
                     "total_chunks": len(chunks),
                 }
@@ -411,18 +416,23 @@ class NCERTIndexer:
 
 def main():
     parser = argparse.ArgumentParser(description="Index NCERT books into FAISS")
-    parser.add_argument("--source", type=str, help="Source directory with PDFs")
+    parser.add_argument("--board", type=str, default="cbse", help="Board name (cbse, icse, etc)")
+    parser.add_argument("--source", type=str, help="Source directory with PDFs (overrides board path)")
     parser.add_argument("--clear", action="store_true", help="Clear existing index")
     parser.add_argument("--search", type=str, help="Test search query")
     parser.add_argument("--stats", action="store_true", help="Show index statistics")
 
     args = parser.parse_args()
 
-    indexer = NCERTIndexer()
+    indexer = NCERTIndexer(board=args.board)
+    logger.info(f"Board: {args.board.upper()}")
+    logger.info(f"Data path: {indexer.data_path}")
+    logger.info(f"Index path: {indexer.index_path}")
 
     if args.stats:
         stats = indexer.get_stats()
-        print("\n📊 Index Statistics:")
+        print(f"\n📊 Index Statistics ({args.board.upper()}):")
+        print(f"  Board: {args.board.upper()}")
         print(f"  Total documents: {stats['total_documents']}")
         print(f"  Index size: {stats['index_size']}")
         if "by_class" in stats:
@@ -448,7 +458,7 @@ def main():
     count = indexer.index_directory(source_path=source, clear=args.clear)
 
     if count > 0:
-        print(f"\n✅ Successfully indexed {count} documents!")
+        print(f"\n✅ Successfully indexed {count} documents for {args.board.upper()}!")
         print(f"   Index saved to: {indexer.index_path}")
         print("\n🔍 Test search:")
         results = indexer.search("quadratic equations", k=2)
